@@ -1,0 +1,11 @@
+# Virtual environments
+venv/
+env/
+ENV/
+
+
+# Local development
+.env
+.venv
+env/
+
