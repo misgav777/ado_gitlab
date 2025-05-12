@@ -87,6 +87,13 @@ new_label_color_strategy: "random"
 #   "status::": "#FF0000"
 #   "priority::": "#00FF00"
 
+# --- ADO Tag Migration Settings ---
+migrate_ado_tags: true  # Set to false to skip migrating ADO tags
+# Optional: Prefix for labels created from ADO tags.
+# E.g., if prefix is "ado_tag::", an ADO tag "Performance" becomes "ado_tag::Performance" in GitLab.
+# Set to "" (empty string) for no prefix (direct migration of tag name).
+ado_tag_label_prefix: "" # Example: "ado_tag::" or "" for direct mapping
+
 # --- Comment Migration Settings ---
 migrate_comments: true # Set to false to skip comment migration
 
