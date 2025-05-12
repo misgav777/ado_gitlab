@@ -1,0 +1,145 @@
+# migration_config.yaml
+
+# --- Work Item Type Mapping ---
+# Maps ADO Work Item Types to GitLab target types ('epic' or 'issue').
+# ADO Type names are case-sensitive as they appear in ADO.
+ado_to_gitlab_type:
+  "Epic": "epic"
+  "Feature": "epic"
+  "Product Backlog Item": "issue"
+  "User Story": "issue"
+  "Task": "issue"
+  "Bug": "issue"
+  "Impediment": "issue"
+  # Add any other custom ADO work item types you use
+  "Requirement": "issue" # Example custom ADO type
+
+# --- Default GitLab target type for unmapped ADO types ---
+# If an ADO type isn't listed above, it will be mapped to this GitLab type.
+default_gitlab_type: "issue"
+
+# --- ADO State to GitLab Label Mapping ---
+# Maps ADO States to one or more GitLab labels.
+# You can also specify a special 'action' key:
+#   '_close_issue_':  Indicates the GitLab issue should be closed.
+#   '_reopen_issue_': Indicates the GitLab issue should be opened (if previously closed).
+# ADO State names are case-sensitive.
+ado_state_to_gitlab_labels:
+  "New":
+    labels: ["status::New"]
+  "Active":
+    labels: ["status::Active", "workflow::In Progress"]
+  "In Progress": # Example of a custom ADO state
+    labels: ["status::Active", "workflow::In Progress"]
+  "Proposed":
+    labels: ["status::Proposed"]
+  "Resolved":
+    labels: ["status::Resolved", "workflow::Review"]
+  "Closed":
+    labels: ["status::Closed", "workflow::Done"]
+    action: "_close_issue_"
+  "Done": # Example of a custom ADO state
+    labels: ["status::Done", "workflow::Done"]
+    action: "_close_issue_"
+  "Removed":
+    labels: ["status::Removed"]
+    action: "_close_issue_"
+
+# --- User Mapping (ADO User Email/DisplayName to GitLab Username or User ID) ---
+# This is foundational for migrating assignees, creators, and @mentions.
+# ADO User Key: Use unique identifiers like Azure AD User Principal Name (UPN) or email.
+#                If only DisplayName is available, ensure it's unique or develop a strategy.
+# GitLab User Value: GitLab username (without @) or numeric User ID.
+user_mapping:
+  "alice@example.com": "alice_gitlab"
+  "bob.doe@example.com": 123 # GitLab User ID for Bob
+  "Charles Xavier (ADO)": "professor_x" # If using display names, be cautious
+  # A default/fallback GitLab user for unmapped ADO users (e.g., a bot account)
+  "_default_": "migration_bot_user" # This user must exist in GitLab
+
+# --- ADO Field for Priority (Optional) ---
+# Specify the ADO field reference name for priority (e.g., "Microsoft.VSTS.Common.Priority")
+# Find common field names here: https://learn.microsoft.com/en-us/azure/devops/boards/queries/witql-field-reference
+ado_priority_field_ref_name: "Microsoft.VSTS.Common.Priority"
+
+# --- ADO Priority Value to GitLab Label Mapping (Optional) ---
+# Maps ADO Priority values (typically integers) to GitLab labels.
+# Check your ADO process template for actual priority values.
+ado_priority_to_gitlab_label:
+  1: "priority::1-Critical"
+  2: "priority::2-High"
+  3: "priority::3-Medium"
+  4: "priority::4-Low"
+
+# --- Default label prefix for unmapped ADO states or priorities ---
+# If an ADO state "Investigate" is not in ado_state_to_gitlab_labels, and this prefix is "ado_state::",
+# it will become the label "ado_state::Investigate".
+# Set to empty "" to use the direct ADO state/priority value as the label if unmapped.
+unmapped_ado_state_label_prefix: "ado_state::"
+unmapped_ado_priority_label_prefix: "ado_priority::"
+
+# --- GitLab label color strategy ---
+# "random": Assigns a random color to newly created labels.
+# "fixed": Uses a predefined map of label prefixes/names to colors. (More advanced, not implemented in this iteration)
+# "default_gitlab": Lets GitLab assign its default color. (Simplest, but less control)
+new_label_color_strategy: "random"
+# fixed_label_colors: # Example for "fixed" strategy (implement later if needed)
+#   "status::": "#FF0000"
+#   "priority::": "#00FF00"
+
+# --- Comment Migration Settings ---
+migrate_comments: true # Set to false to skip comment migration
+
+# Format for the prefix of migrated comments. Placeholders: {author}, {timestamp}
+# Ensure this helps identify migrated comments if you need to clean up/re-run.
+migrated_comment_header_format: "**Comment from ADO by {author} on {timestamp}:**\n\n"
+
+# --- Link Type Mapping ---
+# Maps ADO Link Reference Names to GitLab Link Types ('relates_to', 'blocks', 'is_blocked_by')
+# Use null or omit to ignore a specific ADO link type.
+# "_parent_" and "_child_" are special internal keywords for hierarchical links already handled.
+# ADO Link RefNames can be found via ADO REST API or documentation.
+ado_to_gitlab_link_type_mapping:
+  # Hierarchical links are typically handled by the script's specific parent/child logic.
+  # We mark them so they are not processed by the generic link logic if encountered differently.
+  "System.LinkTypes.Hierarchy-Forward": "_parent_of_current_" # Indicates current item is child, linked item is parent
+  "System.LinkTypes.Hierarchy-Reverse": "_child_of_current_"  # Indicates current item is parent, linked item is child
+
+  "System.LinkTypes.Related": "relates_to"
+  "System.LinkTypes.Duplicate-Forward": "relates_to" # Or consider adding a "duplicate of ADO#XXX" note
+  # For "Blocks" and "Blocked By", ADO uses "Dependency" and you determine direction.
+  # If ADO item A has a "Successor" link to ADO item B (A must be done before B can start):
+  #   - Link on A: Type "Successor", rel="System.LinkTypes.Dependency-Forward" (points to B)
+  #   - Link on B: Type "Predecessor", rel="System.LinkTypes.Dependency-Reverse" (points to A)
+  # So, if current ADO item has a "System.LinkTypes.Dependency-Forward" link to a target,
+  # it means current item blocks the target.
+  "System.LinkTypes.Dependency-Forward": "blocks" # Current item blocks the target item of this link
+  "System.LinkTypes.Dependency-Reverse": "is_blocked_by" # Current item is blocked by the target item of this link
+
+  # Example: Test Case links (might be too specific for generic issue links)
+  # "Microsoft.VSTS.Common.TestedBy-Forward": null # PBI tested by Test Case
+  # "Microsoft.VSTS.Common.TestedBy-Reverse": null # Test Case tests PBI
+
+  # Add other common link types as needed:
+  # "Microsoft.VSTS.Common.Affects-Forward": "relates_to"
+  # "Microsoft.VSTS.Common.Affects-Reverse": "relates_to"
+
+default_gitlab_link_type: "relates_to" # Fallback for unmapped ADO link types if you want to create them anyway
+
+# --- Description Field Mapping ---
+# List of ADO field reference names to concatenate for the GitLab issue/epic description.
+# They will be added in the order specified, separated by a horizontal rule.
+# Common fields: "System.Description", "Microsoft.VSTS.TCM.ReproSteps", "Custom.SystemInfoField"
+# If this list is empty or not provided, it will default to ["System.Description"].
+ado_description_fields:
+  - "System.Description"
+  # Add other fields you use for primary content. For example, from your screenshots:
+  - "Microsoft.VSTS.TCM.ReproSteps" # For "Repro Steps"
+  # You'll need to find the correct reference name for "System Info" if it's a custom field.
+  # It might be something like "Custom.SystemInfo" or similar.
+  # If it's a standard field, find its reference name.
+  # Example: - "Custom.DetailedInformation"
+
+# --- Comment Image Migration Settings ---
+# (Ensure migrate_comment_images is true if you want images in descriptions/comments)
+migrate_comment_images: truemi

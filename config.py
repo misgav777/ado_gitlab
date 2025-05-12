@@ -1,7 +1,7 @@
-AZURE_ORG_URL = "https://dev.azure.com/misgav777"
-AZURE_PROJECT = "MyShuttle"
-AZURE_PAT = "7BDQoJxFS1i76ZZb77nNKB4VdrDDDi1jnlGOPcsWX6NnbS1EgqjcJQQJ99BDACAAAAAAAAAAAAASAZDO4QsB"
+AZURE_ORG_URL = "xxxxxxxxx"
+AZURE_PROJECT = "PORTAL-INFO"
+AZURE_PAT = "xxxxxxxxx"
 
 GITLAB_URL = "https://gitlab.com"
-GITLAB_PAT = "glpat-yPZQjEZEnjB1JSuDspT-"
-GITLAB_PROJECT_ID = 69210123  # GitLab numeric ID or path
+GITLAB_PAT = "glpat-xxxxxxxxxx"
+GITLAB_PROJECT_ID = 0000000  # GitLab numeric ID or path
