@@ -2,7 +2,7 @@
 import logging
 import sys
 import random 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date # Added date for milestone date formatting
 import re 
 import os 
 
@@ -27,7 +27,7 @@ if not logger.handlers:
     try:
         file_handler = logging.FileHandler(LOG_FILE, mode='a', encoding='utf-8')
         file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - [%(name)s] - %(message)s')
-        file_handler.setFormatter(file_formatter)
+        file_handler.setFormatter(file_formatter) 
         file_handler.setLevel(logging.INFO)
         logger.addHandler(file_handler)
     except Exception as e: print(f"CRITICAL: Failed to configure file logger for {LOG_FILE}: {e}.")
@@ -40,6 +40,35 @@ if not logger.handlers:
 logging.getLogger("gitlab").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("msrest").setLevel(logging.INFO)
+
+def parse_ado_date_to_gitlab_format(ado_date_str):
+    """
+    Parses ADO date string (typically ISO 8601 with Z or offset) and returns YYYY-MM-DD.
+    Returns None if parsing fails.
+    """
+    if not ado_date_str:
+        return None
+    try:
+        # ADO dates are often like "2023-10-27T00:00:00Z" or might have other timezone info
+        # datetime.fromisoformat handles 'Z' correctly for UTC
+        if isinstance(ado_date_str, datetime): # If it's already a datetime object
+            dt_obj = ado_date_str
+        else:
+            dt_obj = datetime.fromisoformat(ado_date_str.replace('Z', '+00:00'))
+        return dt_obj.strftime('%Y-%m-%d')
+    except ValueError:
+        logger.warning(f"Could not parse date string from ADO: {ado_date_str}")
+        # Try a more lenient parse if fromisoformat fails (e.g. for dates without T or Z)
+        try:
+            dt_obj = datetime.strptime(ado_date_str.split('T')[0], '%Y-%m-%d')
+            return dt_obj.strftime('%Y-%m-%d')
+        except ValueError:
+            logger.warning(f"Further attempt to parse date string {ado_date_str} as YYYY-MM-DD also failed.")
+            return None
+    except Exception as e:
+        logger.error(f"Unexpected error parsing date string {ado_date_str}: {e}")
+        return None
+
 
 def main():
     logger.info("--- Starting ADO to GitLab Migration Script ---")
@@ -71,8 +100,13 @@ def main():
     ado_id_to_gitlab = config_loader.load_mapping(filepath=ADO_GITLAB_MAP_FILE)
     logger.info(f"Loaded {len(ado_id_to_gitlab)} existing ADO-GitLab mappings from {ADO_GITLAB_MAP_FILE}.")
 
+    # --- Determine fields to select for ADO query ---
     ado_priority_field_ref = script_config.get('ado_priority_field_ref_name')
-    fields_to_select_list = ["[System.Id]", "[System.Title]", "[System.WorkItemType]", "[System.State]", "[System.Tags]"] # Added System.Tags
+    fields_to_select_list = [
+        "[System.Id]", "[System.Title]", "[System.WorkItemType]", 
+        "[System.State]", "[System.Tags]",
+        "[System.AreaPath]", "[System.IterationPath]" # Added Area and Iteration Path
+    ]
     
     ado_desc_fields_config = script_config.get('ado_description_fields', ["System.Description"]) 
     if not ado_desc_fields_config: 
@@ -89,7 +123,10 @@ def main():
     if not ado_work_item_refs: 
         logger.info("No work items to process based on ADO query.")
         
-    logger.info("--- Phase 1: Creating Epics and Issues (and migrating comments) ---")
+    # Cache for ADO iteration node details to avoid repeated API calls
+    iteration_node_cache = {}
+
+    logger.info("--- Phase 1: Creating Epics and Issues (and migrating comments, areas, iterations) ---")
     for wi_ref in ado_work_item_refs:
         ado_work_item_id = wi_ref.id
         logger.info(f"Processing ADO Work Item #{ado_work_item_id}...")
@@ -98,6 +135,7 @@ def main():
         gitlab_item_type_for_comments = None
 
         if ado_work_item_id in ado_id_to_gitlab:
+            # ... (existing item handling logic - remains the same) ...
             existing_mapping = ado_id_to_gitlab[ado_work_item_id]
             logger.info(f"ADO #{ado_work_item_id} already mapped to GitLab {existing_mapping['type']} #{existing_mapping['id']}. Will not re-create item.")
             try:
@@ -142,11 +180,15 @@ def main():
                 ado_type = ado_work_item_details.fields.get("System.WorkItemType", "WorkItem")
                 ado_state = ado_work_item_details.fields.get("System.State", "Undefined")
                 ado_priority_val = ado_work_item_details.fields.get(ado_priority_field_ref) if ado_priority_field_ref else None
-                ado_tags_string = ado_work_item_details.fields.get("System.Tags", "") # Get ADO Tags
+                ado_tags_string = ado_work_item_details.fields.get("System.Tags", "")
+                ado_area_path = ado_work_item_details.fields.get("System.AreaPath", "")
+                ado_iteration_path = ado_work_item_details.fields.get("System.IterationPath", "")
                 
                 migration_footer = f"\n\n---\nMigrated from ADO #{ado_work_item_id} (Type: {ado_type}, State: {ado_state}"
                 if ado_priority_val is not None: migration_footer += f", Priority: {ado_priority_val}"
-                if ado_tags_string: migration_footer += f", Original ADO Tags: {ado_tags_string}" # Optionally add original tags to footer
+                if ado_tags_string: migration_footer += f", Original ADO Tags: {ado_tags_string}"
+                if ado_area_path: migration_footer += f", Original Area: {ado_area_path}"
+                if ado_iteration_path: migration_footer += f", Original Iteration: {ado_iteration_path}"
                 migration_footer += ")"
                 final_description_for_gitlab = description_md + migration_footer
 
@@ -170,14 +212,42 @@ def main():
                 
                 if gitlab_target_type_str != 'epic' and ado_type: labels_to_apply_names.append(f"ado_type::{ado_type}")
 
-                # --- Migrate ADO Tags to GitLab Labels ---
                 if script_config.get('migrate_ado_tags', False) and ado_tags_string:
                     tag_prefix = script_config.get('ado_tag_label_prefix', '')
                     parsed_tags = [tag.strip() for tag in ado_tags_string.split(';') if tag.strip()]
-                    for tag in parsed_tags:
-                        labels_to_apply_names.append(f"{tag_prefix}{tag}")
+                    for tag in parsed_tags: labels_to_apply_names.append(f"{tag_prefix}{tag}")
                     logger.info(f"  Prepared ADO tags for migration: {parsed_tags} with prefix '{tag_prefix}'")
-                # --- End ADO Tag Migration ---
+
+                # --- Migrate ADO Area Path to GitLab Labels ---
+                if script_config.get('migrate_area_paths_to_labels', False) and ado_area_path:
+                    area_prefix = script_config.get('area_path_label_prefix', 'area::')
+                    strategy = script_config.get('area_path_handling_strategy', 'last_segment_only')
+                    level_sep = script_config.get('area_path_level_separator', '\\')
+                    gitlab_sep = script_config.get('gitlab_area_path_label_separator', '::')
+                    
+                    path_segments = [seg.strip() for seg in ado_area_path.split(level_sep) if seg.strip()]
+                    # Remove project name if it's the first segment
+                    if path_segments and path_segments[0].lower() == AZURE_PROJECT.lower():
+                        path_segments.pop(0)
+
+                    if path_segments:
+                        if strategy == 'last_segment_only':
+                            labels_to_apply_names.append(f"{area_prefix}{path_segments[-1]}")
+                        elif strategy == 'full_path':
+                            labels_to_apply_names.append(f"{area_prefix}{gitlab_sep.join(path_segments)}")
+                        elif strategy == 'all_segments':
+                            for segment in path_segments:
+                                labels_to_apply_names.append(f"{area_prefix}{segment}")
+                        elif strategy == 'all_segments_hierarchical':
+                            current_hier_path = ""
+                            for i, segment in enumerate(path_segments):
+                                if i == 0:
+                                    current_hier_path = segment
+                                else:
+                                    current_hier_path += f"{gitlab_sep}{segment}"
+                                labels_to_apply_names.append(f"{area_prefix}{current_hier_path}")
+                        logger.info(f"  Prepared Area Path '{ado_area_path}' as labels with strategy '{strategy}'")
+                # --- End Area Path Migration ---
                 
                 final_gl_labels = []
                 for label_name in list(set(labels_to_apply_names)): 
@@ -187,8 +257,60 @@ def main():
                         final_gl_labels.append(created_label_name)
                 
                 item_payload = {'title': title, 'description': final_description_for_gitlab, 'labels': final_gl_labels}
+
+                # --- Handle Iteration Path to GitLab Milestone ---
+                if script_config.get('migrate_iteration_paths_to_milestones', False) and ado_iteration_path:
+                    logger.debug(f"  Processing Iteration Path: {ado_iteration_path}")
+                    milestone_title_map = script_config.get('iteration_path_to_milestone_title_map', {})
+                    milestone_title = milestone_title_map.get(ado_iteration_path)
+                    
+                    if not milestone_title: # Default to last segment of the path
+                        path_segments = [seg.strip() for seg in ado_iteration_path.split(script_config.get('area_path_level_separator', '\\')) if seg.strip()]
+                        if path_segments:
+                            milestone_title = path_segments[-1]
+                    
+                    if milestone_title:
+                        start_date_str, due_date_str = None, None
+                        if ado_iteration_path not in iteration_node_cache:
+                            logger.debug(f"    Fetching details for Iteration Path node: {ado_iteration_path}")
+                            # 'iterations' is the structure_group for Iteration Paths
+                            node_details = ado_client.get_ado_classification_node_details(
+                                ado_wit_client, AZURE_PROJECT, 'iterations', ado_iteration_path, depth=0
+                            )
+                            iteration_node_cache[ado_iteration_path] = node_details # Cache even if None
+                        else:
+                            logger.debug(f"    Using cached details for Iteration Path node: {ado_iteration_path}")
+                            node_details = iteration_node_cache[ado_iteration_path]
+
+                        if node_details and hasattr(node_details, 'attributes') and node_details.attributes:
+                            start_date_raw = node_details.attributes.get('startDate')
+                            finish_date_raw = node_details.attributes.get('finishDate')
+                            start_date_str = parse_ado_date_to_gitlab_format(start_date_raw)
+                            due_date_str = parse_ado_date_to_gitlab_format(finish_date_raw)
+                            logger.debug(f"    ADO Iteration dates: Start='{start_date_raw}' -> '{start_date_str}', Finish='{finish_date_raw}' -> '{due_date_str}'")
+                        
+                        # Milestones are typically project-level in GitLab when assigning to issues
+                        # Group milestones also exist. For now, creating/assigning at project level.
+                        milestone_obj = gitlab_interaction.get_or_create_gitlab_milestone(
+                            gitlab_project, milestone_title, start_date_str, due_date_str
+                        )
+                        if milestone_obj and hasattr(milestone_obj, 'id'):
+                            item_payload['milestone_id'] = milestone_obj.id
+                            logger.info(f"  Assigned to GitLab Milestone: '{milestone_title}' (ID: {milestone_obj.id})")
+                        else:
+                            logger.warning(f"  Could not find or create GitLab Milestone for Iteration Path: '{ado_iteration_path}' (Title: '{milestone_title}')")
+                    else:
+                        logger.warning(f"  Could not determine a milestone title for Iteration Path: {ado_iteration_path}")
+                # --- End Iteration Path to Milestone ---
+
                 created_gl_item = None
                 if gitlab_target_type_str == "epic":
+                    # Note: Epics in GitLab don't directly have milestones in the same way issues do.
+                    # If mapping an ADO Epic with an iteration to a GitLab Epic, the milestone might be conceptually linked
+                    # or applied to child issues of the epic.
+                    if 'milestone_id' in item_payload:
+                        logger.info(f"  Note: Milestone ID {item_payload['milestone_id']} prepared but GitLab Epics don't directly use project milestones. This might be applied to child issues.")
+                        # del item_payload['milestone_id'] # Or keep it if your workflow uses it differently at epic level via API
                     created_gl_item = gitlab_interaction.create_gitlab_epic(gitlab_group, item_payload, ado_work_item_id)
                 else: # issue
                     created_gl_item = gitlab_interaction.create_gitlab_issue(gitlab_project, item_payload, ado_work_item_id)
@@ -206,6 +328,8 @@ def main():
                 logger.error(f"  UNEXPECTED ERROR during item creation phase for ADO #{ado_work_item_id}.", exc_info=True)
                 continue
 
+        # --- Migrate Comments (with images) ---
+        # (Comment migration logic remains the same as in ado_gitlab_migration_script_full_v6) ...
         if script_config.get('migrate_comments', False) and gitlab_item_for_comments:
             logger.info(f"  Fetching comments for ADO #{ado_work_item_id} (GitLab {gitlab_item_type_for_comments} #{gitlab_item_for_comments.iid})...")
             ado_comments_list = ado_client.get_ado_work_item_comments(ado_wit_client, AZURE_PROJECT, ado_work_item_id)
@@ -241,6 +365,7 @@ def main():
                 logger.info(f"  No comments found in ADO for #{ado_work_item_id} to migrate.")
         
     # --- Phase 2: Link Parent/Child and Other Relations ---
+    # (Link migration logic remains the same as in ado_gitlab_migration_script_full_v6) ...
     logger.info("--- Phase 2: Linking Parent/Child and Other Relations ---")
     if not ado_work_item_refs: logger.info("No work items to process for linking (based on initial query).")
     else:
@@ -305,11 +430,8 @@ def main():
                             else: 
                                 logger.info(f"    Skipping generic link type '{mapped_gl_link_type}': Both items must be GitLab 'issues'.")
                         elif ado_link_ref_name not in script_config.get('ado_to_gitlab_link_type_mapping', {}):
-                            # Log only if it wasn't explicitly set to null in the mapping and no default was applicable
-                            if script_config.get('ado_to_gitlab_link_type_mapping', {}).get(ado_link_ref_name) is not None or \
-                               (not script_config.get('ado_to_gitlab_link_type_mapping', {}).get(ado_link_ref_name) and not script_config.get('default_gitlab_link_type')):
+                            if script_config.get('ado_to_gitlab_link_type_mapping', {}).get(ado_link_ref_name) is not None:
                                 logger.info(f"    ADO Link type '{ado_link_ref_name}' ({ado_link_friendly_name}) from ADO #{source_ado_id} to #{target_ado_id} is not mapped and no default applicable. Skipping.")
-                            
                     except Exception as e_rel_proc: 
                         logger.warning(f"    Error processing relation for ADO source {source_ado_id} to target {target_ado_id}: {getattr(rel, 'url', 'N/A')}. Error: {e_rel_proc}", exc_info=True)
             else: 

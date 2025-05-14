@@ -1,3 +1,4 @@
+# ado_gitlab_migration/config_loader.py
 import json
 import os
 import yaml
@@ -7,8 +8,10 @@ logger = logging.getLogger('ado_gitlab_migrator') # Get logger instance
 
 # MIGRATION_CONFIG_FILE can remain global if it's not project-specific
 MIGRATION_CONFIG_FILE = 'migration_config.yaml'
+# ADO_GITLAB_MAP_FILE is no longer a global constant here, 
+# it's constructed in main_migrator.py and passed to functions.
 
-def load_mapping(filepath): # Removed default ADO_GITLAB_MAP_FILE
+def load_mapping(filepath): # filepath will be passed by main_migrator
     """Loads the ADO ID to GitLab ID mapping from a JSON file."""
     if os.path.exists(filepath):
         try:
@@ -27,7 +30,7 @@ def load_mapping(filepath): # Removed default ADO_GITLAB_MAP_FILE
     logger.info(f"Mapping file {filepath} not found. Starting with an empty map.")
     return {}
 
-def save_mapping(mapping_data, filepath): # Removed default ADO_GITLAB_MAP_FILE
+def save_mapping(mapping_data, filepath): # filepath will be passed by main_migrator
     """Saves the ADO ID to GitLab ID mapping to a JSON file."""
     try:
         with open(filepath, 'w', encoding='utf-8') as f:
@@ -36,7 +39,7 @@ def save_mapping(mapping_data, filepath): # Removed default ADO_GITLAB_MAP_FILE
     except Exception as e:
         logger.error(f"Could not save mapping file {filepath}", exc_info=True)
 
-def load_migration_config(filepath=MIGRATION_CONFIG_FILE):
+def load_migration_config(filepath=MIGRATION_CONFIG_FILE): # This is the function being called
     """Loads the migration configuration from a YAML file."""
     if os.path.exists(filepath):
         try:
