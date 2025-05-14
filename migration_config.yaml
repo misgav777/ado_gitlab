@@ -150,3 +150,35 @@ ado_description_fields:
 # --- Comment Image Migration Settings ---
 # (Ensure migrate_comment_images is true if you want images in descriptions/comments)
 migrate_comment_images: truemi
+
+# --- Iteration Path to GitLab Milestone Mapping ---
+migrate_iteration_paths_to_milestones: true # Set to false to skip this
+# If true, the script will attempt to use the last part of the ADO Iteration Path
+# as the title for a GitLab Milestone.
+# Dates for milestones will be attempted if ADO provides them for the iteration node.
+# If you have specific ADO Iteration Paths you want to map to specific existing
+# GitLab Milestone titles (or new titles), you can define them here.
+# Example:
+# iteration_path_to_milestone_title_map:
+#   "MyProject\\Release 1\\Sprint 1": "GitLab Release 1.0 - Sprint 1"
+#   "MyProject\\Release 1\\Sprint 2": "GitLab Release 1.0 - Sprint 2"
+# If a path is not in the map, the script will use its last segment as the title.
+iteration_path_to_milestone_title_map: {} # Default to empty, uses last segment
+
+# --- Area Path to GitLab Label Mapping ---
+migrate_area_paths_to_labels: true # Set to false to skip this
+# Prefix for labels created from ADO Area Paths.
+# E.g., if prefix is "area::", an ADO Area Path "MyTeam" becomes "area::MyTeam".
+area_path_label_prefix: "area::"
+# How to handle hierarchical Area Paths (e.g., "ProjectA\\TeamB\\ComponentC")
+# "full_path": Creates one label like "area::ProjectA::TeamB::ComponentC"
+# "last_segment_only": Creates one label like "area::ComponentC"
+# "all_segments": Creates multiple labels: "area::ProjectA", "area::TeamB", "area::ComponentC"
+# "all_segments_hierarchical": Creates "area::ProjectA", "area::ProjectA::TeamB", "area::ProjectA::TeamB::ComponentC"
+area_path_handling_strategy: "last_segment_only" # Options: "full_path", "last_segment_only", "all_segments", "all_segments_hierarchical"
+area_path_level_separator: "\\" # The character ADO uses to separate levels in Area Path (usually backslash)
+gitlab_area_path_label_separator: "::" # Separator for hierarchical labels in GitLab (e.g., area::TeamA::SubTeam)
+
+# --- GitLab Client Timeout ---
+# (You might already have this from previous image migration steps)
+gitlab_client_timeout: 60 # Timeout in seconds for GitLab client operations
