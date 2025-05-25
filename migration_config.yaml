@@ -149,7 +149,7 @@ ado_description_fields:
 
 # --- Comment Image Migration Settings ---
 # (Ensure migrate_comment_images is true if you want images in descriptions/comments)
-migrate_comment_images: truemi
+migrate_comment_images: true
 
 # --- Iteration Path to GitLab Milestone Mapping ---
 migrate_iteration_paths_to_milestones: true # Set to false to skip this

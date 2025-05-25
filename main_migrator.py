@@ -208,7 +208,8 @@ def main():
                     concatenated_description_html = utils.migrate_images_in_html_text(
                         concatenated_description_html, gitlab_project, AZURE_PAT, script_config, gitlab_interaction
                     )
-                description_md = utils.basic_html_to_markdown(concatenated_description_html)
+                # description_md = utils.basic_html_to_markdown(concatenated_description_html)
+                description_md = utils.html_to_markdown(concatenated_description_html)
 
                 ado_type = ado_work_item_details.fields.get("System.WorkItemType", "WorkItem")
                 ado_state = ado_work_item_details.fields.get("System.State", "Undefined")
@@ -370,7 +371,8 @@ def main():
                             comment_text_html = utils.migrate_images_in_html_text(
                                 comment_text_html, gitlab_project, AZURE_PAT, script_config, gitlab_interaction
                             )
-                        comment_text_md = utils.basic_html_to_markdown(comment_text_html)
+                        # comment_text_md = utils.basic_html_to_markdown(comment_text_html)
+                        comment_text_md = utils.html_to_markdown(comment_text_html)
 
                         # --- Get author and timestamp from the ADO work item detail for comments if needed ---
                         # This part assumes ado_comment object has 'created_by' and 'created_date'

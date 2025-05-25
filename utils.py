@@ -10,6 +10,15 @@ import random # Added for filename fallback if not already present
 
 logger = logging.getLogger('ado_gitlab_migrator')
 
+try:
+    from markdownify import markdownify as md
+    MARKDOWNIFY_AVAILABLE = True
+    logger.debug("markdownify library available for HTML conversion")
+except ImportError:
+    MARKDOWNIFY_AVAILABLE = False
+    logger.warning("markdownify library not available, using basic HTML conversion. Install with: pip install markdownify")
+
+
 def get_ado_user_representation(ado_user_identity, config_data):
     if not ado_user_identity: return "Unknown ADO User"
     display_name = getattr(ado_user_identity, 'display_name', 'Unknown Name')
