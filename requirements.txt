@@ -3,3 +3,4 @@ python-gitlab==4.4.0
 PyYAML
 markdownify>=0.11.6
 requests
+aiohttp

@@ -5,8 +5,12 @@ import random
 from datetime import datetime, timezone, date
 import re
 import os
+import asyncio
+import aiohttp
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import json
 
-# ... (imports and initial setup remain the same) ...
+
 try:
     from config import AZURE_ORG_URL, AZURE_PROJECT, AZURE_PAT, GITLAB_URL, GITLAB_PAT, GITLAB_PROJECT_ID
 except ImportError:
@@ -22,7 +26,6 @@ safe_project_name = re.sub(r'[^\w\-_\.]', '_', AZURE_PROJECT) if AZURE_PROJECT e
 LOG_FILE = f"{safe_project_name}_migration_log.txt"
 ADO_GITLAB_MAP_FILE = f"{safe_project_name}_ado_gitlab_map.json"
 
-# ... (logger setup remains the same) ...
 logger = logging.getLogger('ado_gitlab_migrator')
 logger.setLevel(logging.DEBUG) # Set to DEBUG for detailed output during development
 if not logger.handlers:
@@ -43,6 +46,76 @@ logging.getLogger("gitlab").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("msrest").setLevel(logging.INFO)
 
+def save_checkpoint(completed_ids, total_count):
+    checkpoint = {
+        'completed_ids': completed_ids,
+        'total_count': total_count,
+        'timestamp': datetime.now().isoformat(),
+        'completion_rate': len(completed_ids) / total_count * 100
+    }
+    with open('migration_checkpoint.json', 'w') as f:
+        json.dump(checkpoint, f, indent=2)
+
+def load_checkpoint():
+    try:
+        with open('migration_checkpoint.json', 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return None
+
+def process_images_parallel(image_urls, ado_pat, script_config, gitlab_project, max_workers=5):
+    """Process multiple images in parallel"""
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_url = {
+            executor.submit(
+                utils.download_ado_image, url, ado_pat, script_config
+            ): url for url in image_urls
+        }
+        
+        results = {}
+        for future in as_completed(future_to_url):
+            url = future_to_url[future]
+            try:
+                filename, image_bytes = future.result()
+                if filename and image_bytes:
+                    # Upload to GitLab
+                    markdown_link = gitlab_interaction.upload_image_and_get_markdown(
+                        gitlab_project, filename, image_bytes
+                    )
+                    results[url] = markdown_link
+            except Exception as e:
+                logger.error(f"Failed to process image {url}: {e}")
+                results[url] = None
+        
+        return results
+
+def batch_create_gitlab_items(items_data, gitlab_project, gitlab_group, max_workers=3):
+    """Create multiple GitLab items in parallel (with rate limiting)"""
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = []
+        for item_data in items_data:
+            if item_data['type'] == 'epic':
+                future = executor.submit(
+                    gitlab_interaction.create_gitlab_epic, 
+                    gitlab_group, item_data['payload'], item_data['ado_id']
+                )
+            else:
+                future = executor.submit(
+                    gitlab_interaction.create_gitlab_issue, 
+                    gitlab_project, item_data['payload'], item_data['ado_id']
+                )
+            futures.append((future, item_data))
+        
+        results = []
+        for future, item_data in futures:
+            try:
+                result = future.result()
+                results.append((item_data['ado_id'], result))
+            except Exception as e:
+                logger.error(f"Failed to create item for ADO #{item_data['ado_id']}: {e}")
+                results.append((item_data['ado_id'], None))
+        
+        return results
 
 def parse_ado_date_to_gitlab_format(ado_date_str):
     # ... (function remains the same) ...
