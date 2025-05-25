@@ -9,3 +9,5 @@ ENV/
 .venv
 env/
 __pycache__
+*log.txt
+*.json

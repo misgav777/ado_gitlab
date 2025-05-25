@@ -1,11 +1,12 @@
 # ado_gitlab_migration/main_migrator.py
 import logging
 import sys
-import random 
-from datetime import datetime, timezone, date # Added date for milestone date formatting
-import re 
-import os 
+import random
+from datetime import datetime, timezone, date
+import re
+import os
 
+# ... (imports and initial setup remain the same) ...
 try:
     from config import AZURE_ORG_URL, AZURE_PROJECT, AZURE_PAT, GITLAB_URL, GITLAB_PAT, GITLAB_PROJECT_ID
 except ImportError:
@@ -14,51 +15,47 @@ except ImportError:
 
 import config_loader
 import ado_client
-import gitlab_interaction 
+import gitlab_interaction
 import utils
 
 safe_project_name = re.sub(r'[^\w\-_\.]', '_', AZURE_PROJECT) if AZURE_PROJECT else "default_project"
 LOG_FILE = f"{safe_project_name}_migration_log.txt"
 ADO_GITLAB_MAP_FILE = f"{safe_project_name}_ado_gitlab_map.json"
 
+# ... (logger setup remains the same) ...
 logger = logging.getLogger('ado_gitlab_migrator')
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.DEBUG) # Set to DEBUG for detailed output during development
 if not logger.handlers:
     try:
         file_handler = logging.FileHandler(LOG_FILE, mode='a', encoding='utf-8')
         file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - [%(name)s] - %(message)s')
-        file_handler.setFormatter(file_formatter) 
-        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(file_formatter)
+        file_handler.setLevel(logging.INFO) # Or DEBUG
         logger.addHandler(file_handler)
     except Exception as e: print(f"CRITICAL: Failed to configure file logger for {LOG_FILE}: {e}.")
     console_handler = logging.StreamHandler(sys.stdout)
     console_formatter = logging.Formatter('%(levelname)s - %(message)s')
     console_handler.setFormatter(console_formatter)
-    console_handler.setLevel(logging.INFO)
+    console_handler.setLevel(logging.INFO) # Or DEBUG
     logger.addHandler(console_handler)
 
 logging.getLogger("gitlab").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("msrest").setLevel(logging.INFO)
 
+
 def parse_ado_date_to_gitlab_format(ado_date_str):
-    """
-    Parses ADO date string (typically ISO 8601 with Z or offset) and returns YYYY-MM-DD.
-    Returns None if parsing fails.
-    """
+    # ... (function remains the same) ...
     if not ado_date_str:
         return None
     try:
-        # ADO dates are often like "2023-10-27T00:00:00Z" or might have other timezone info
-        # datetime.fromisoformat handles 'Z' correctly for UTC
-        if isinstance(ado_date_str, datetime): # If it's already a datetime object
+        if isinstance(ado_date_str, datetime): 
             dt_obj = ado_date_str
         else:
             dt_obj = datetime.fromisoformat(ado_date_str.replace('Z', '+00:00'))
         return dt_obj.strftime('%Y-%m-%d')
     except ValueError:
         logger.warning(f"Could not parse date string from ADO: {ado_date_str}")
-        # Try a more lenient parse if fromisoformat fails (e.g. for dates without T or Z)
         try:
             dt_obj = datetime.strptime(ado_date_str.split('T')[0], '%Y-%m-%d')
             return dt_obj.strftime('%Y-%m-%d')
@@ -69,14 +66,9 @@ def parse_ado_date_to_gitlab_format(ado_date_str):
         logger.error(f"Unexpected error parsing date string {ado_date_str}: {e}")
         return None
 
-
 def main():
     logger.info("--- Starting ADO to GitLab Migration Script ---")
-    logger.info(f"Using ADO Project: {AZURE_PROJECT}")
-    logger.info(f"Log file: {os.path.abspath(LOG_FILE)}") 
-    logger.info(f"Mapping file: {os.path.abspath(ADO_GITLAB_MAP_FILE)}") 
-    logger.info(f"Current date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-
+    # ... (initial setup, config loading, client init remains the same) ...
     script_config = config_loader.load_migration_config()
     if script_config is None:
         logger.critical("Exiting due to configuration loading failure.")
@@ -100,12 +92,18 @@ def main():
     ado_id_to_gitlab = config_loader.load_mapping(filepath=ADO_GITLAB_MAP_FILE)
     logger.info(f"Loaded {len(ado_id_to_gitlab)} existing ADO-GitLab mappings from {ADO_GITLAB_MAP_FILE}.")
 
+
     # --- Determine fields to select for ADO query ---
+    # For the initial WIQL query, you only need System.Id to get the list of IDs.
+    # Other fields will be fetched in the batch call.
+    fields_for_wiql_query = ["[System.Id]"]
+    
+    # --- Define fields for the batch get_work_items_batch call ---
     ado_priority_field_ref = script_config.get('ado_priority_field_ref_name')
-    fields_to_select_list = [
-        "[System.Id]", "[System.Title]", "[System.WorkItemType]", 
-        "[System.State]", "[System.Tags]",
-        "[System.AreaPath]", "[System.IterationPath]" # Added Area and Iteration Path
+    fields_for_batch_get = [
+        "System.Id", "System.Title", "System.WorkItemType", 
+        "System.State", "System.Tags", "System.CreatedDate", "System.CreatedBy", # Added CreatedDate/By for comments
+        "System.AreaPath", "System.IterationPath"
     ]
     
     ado_desc_fields_config = script_config.get('ado_description_fields', ["System.Description"]) 
@@ -113,33 +111,68 @@ def main():
         ado_desc_fields_config = ["System.Description"]
         
     for field_ref in ado_desc_fields_config:
-        if field_ref and f"[{field_ref}]" not in fields_to_select_list: 
-            fields_to_select_list.append(f"[{field_ref}]")
+        if field_ref and field_ref not in fields_for_batch_get: 
+            fields_for_batch_get.append(field_ref)
             
-    if ado_priority_field_ref and f"[{ado_priority_field_ref}]" not in fields_to_select_list:
-        fields_to_select_list.append(f"[{ado_priority_field_ref}]")
+    if ado_priority_field_ref and ado_priority_field_ref not in fields_for_batch_get:
+        fields_for_batch_get.append(ado_priority_field_ref)
     
-    ado_work_item_refs = ado_client.query_ado_work_item_refs(ado_wit_client, AZURE_PROJECT, fields_to_select_list)
+    # Get all ADO work item references (just IDs primarily)
+    ado_work_item_refs = ado_client.query_ado_work_item_refs(ado_wit_client, AZURE_PROJECT, fields_for_wiql_query)
     if not ado_work_item_refs: 
         logger.info("No work items to process based on ADO query.")
-        
-    # Cache for ADO iteration node details to avoid repeated API calls
-    iteration_node_cache = {}
+        # sys.exit(0) # Optional: exit if no items
+    else:
+        logger.info(f"Found {len(ado_work_item_refs)} total work item references from ADO WIQL query.")
 
-    logger.info("--- Phase 1: Creating Epics and Issues (and migrating comments, areas, iterations) ---")
-    for wi_ref in ado_work_item_refs:
-        ado_work_item_id = wi_ref.id
-        logger.info(f"Processing ADO Work Item #{ado_work_item_id}...")
+    # Extract IDs to fetch in batch
+    all_ado_ids = [wi_ref.id for wi_ref in ado_work_item_refs]
+    
+    # --- Batch fetch ADO work item details ---
+    # Implement chunking if you expect more than ~200 items due to API limits
+    chunk_size = script_config.get('ado_batch_fetch_size', 100) # Configurable chunk size
+    all_ado_work_item_details_list = []
+
+    for i in range(0, len(all_ado_ids), chunk_size):
+        id_chunk = all_ado_ids[i:i + chunk_size]
+        logger.info(f"Fetching details for ADO ID chunk: {id_chunk[:3]}... to {id_chunk[-1:]} (Total: {len(id_chunk)})")
+        
+        # Set expand_relations=False for this primary fetch, relations are fetched later per item
+        # Or, if you *always* need relations for every item, set it to True here,
+        # but be aware it increases payload size.
+        # For now, setting to False for primary creation loop.
+        batch_details = ado_client.get_ado_work_items_batch(
+            ado_wit_client, 
+            id_chunk, 
+            fields=fields_for_batch_get, 
+            expand_relations=False, # Fetch relations separately later IF needed for linking to avoid large initial payloads
+            error_policy="omit" # or "fail"
+        )
+        all_ado_work_item_details_list.extend(batch_details)
+        logger.info(f"Fetched {len(batch_details)} details in this chunk. Total details fetched so far: {len(all_ado_work_item_details_list)}")
+
+
+    iteration_node_cache = {}
+    logger.info(f"--- Phase 1: Creating Epics and Issues (from {len(all_ado_work_item_details_list)} fetched details) ---")
+    
+    # Now loop through the fetched details instead of wi_ref
+    for ado_work_item_details in all_ado_work_item_details_list:
+        if not ado_work_item_details or not hasattr(ado_work_item_details, 'id') or not hasattr(ado_work_item_details, 'fields'):
+            logger.warning(f"Skipping invalid work item detail object: {ado_work_item_details}")
+            continue
+
+        ado_work_item_id = ado_work_item_details.id
+        logger.info(f"Processing ADO Work Item #{ado_work_item_id} (from batch)...")
         
         gitlab_item_for_comments = None
         gitlab_item_type_for_comments = None
 
         if ado_work_item_id in ado_id_to_gitlab:
-            # ... (existing item handling logic - remains the same) ...
             existing_mapping = ado_id_to_gitlab[ado_work_item_id]
             logger.info(f"ADO #{ado_work_item_id} already mapped to GitLab {existing_mapping['type']} #{existing_mapping['id']}. Will not re-create item.")
             try:
                 gitlab_item_type_for_comments = existing_mapping['type']
+                # ... (rest of your existing item handling logic for comments, using existing_mapping['id']) ...
                 if gitlab_item_type_for_comments == "epic":
                     gitlab_item_for_comments = gitlab_interaction.call_with_retry(
                         f"fetch existing epic {existing_mapping['id']}", gitlab_group.epics.get, existing_mapping['id']
@@ -148,18 +181,18 @@ def main():
                     gitlab_item_for_comments = gitlab_interaction.call_with_retry(
                         f"fetch existing issue {existing_mapping['id']}", gitlab_project.issues.get, existing_mapping['id']
                     )
+
             except Exception as e_fetch_existing:
                 logger.error(f"Failed to fetch existing GitLab {gitlab_item_type_for_comments or 'item'} #{existing_mapping.get('id')} for ADO #{ado_work_item_id}. Error: {e_fetch_existing}")
                 gitlab_item_for_comments = None
+
         else: 
             try:
-                ado_work_item_details = ado_client.get_ado_work_item_details(ado_wit_client, ado_work_item_id)
-                if not ado_work_item_details: 
-                    logger.error(f"Could not retrieve details for ADO item #{ado_work_item_id}. Skipping.")
-                    continue
-
+                # ado_work_item_details is already fetched
                 title = ado_work_item_details.fields.get("System.Title", f"Untitled ADO Item {ado_work_item_id}")
                 
+                # ... (rest of your logic for description, labels, milestone, item creation) ...
+                # ... (using ado_work_item_details.fields.get(...) directly) ...
                 concatenated_description_html = ""
                 first_desc_field = True
                 for field_ref_name in ado_desc_fields_config: 
@@ -185,6 +218,7 @@ def main():
                 ado_iteration_path = ado_work_item_details.fields.get("System.IterationPath", "")
                 
                 migration_footer = f"\n\n---\nMigrated from ADO #{ado_work_item_id} (Type: {ado_type}, State: {ado_state}"
+                # ... (rest of migration footer generation) ...
                 if ado_priority_val is not None: migration_footer += f", Priority: {ado_priority_val}"
                 if ado_tags_string: migration_footer += f", Original ADO Tags: {ado_tags_string}"
                 if ado_area_path: migration_footer += f", Original Area: {ado_area_path}"
@@ -194,10 +228,11 @@ def main():
 
                 labels_to_apply_names = []
                 gitlab_target_type_str = script_config.get('ado_to_gitlab_type', {}).get(ado_type, script_config.get('default_gitlab_type', 'issue'))
-                gitlab_item_type_for_comments = gitlab_target_type_str
+                gitlab_item_type_for_comments = gitlab_target_type_str # Store for comment migration
 
                 state_mapping_config = script_config.get('ado_state_to_gitlab_labels', {}).get(ado_state)
                 action_close_issue = False
+                # ... (rest of label generation from state, priority, type, tags, area path) ...
                 if state_mapping_config and isinstance(state_mapping_config, dict):
                     labels_to_apply_names.extend(state_mapping_config.get('labels', []))
                     if state_mapping_config.get('action') == '_close_issue_': action_close_issue = True
@@ -218,7 +253,6 @@ def main():
                     for tag in parsed_tags: labels_to_apply_names.append(f"{tag_prefix}{tag}")
                     logger.info(f"  Prepared ADO tags for migration: {parsed_tags} with prefix '{tag_prefix}'")
 
-                # --- Migrate ADO Area Path to GitLab Labels ---
                 if script_config.get('migrate_area_paths_to_labels', False) and ado_area_path:
                     area_prefix = script_config.get('area_path_label_prefix', 'area::')
                     strategy = script_config.get('area_path_handling_strategy', 'last_segment_only')
@@ -226,11 +260,11 @@ def main():
                     gitlab_sep = script_config.get('gitlab_area_path_label_separator', '::')
                     
                     path_segments = [seg.strip() for seg in ado_area_path.split(level_sep) if seg.strip()]
-                    # Remove project name if it's the first segment
                     if path_segments and path_segments[0].lower() == AZURE_PROJECT.lower():
                         path_segments.pop(0)
 
                     if path_segments:
+                        # ... (area path label generation logic) ...
                         if strategy == 'last_segment_only':
                             labels_to_apply_names.append(f"{area_prefix}{path_segments[-1]}")
                         elif strategy == 'full_path':
@@ -247,7 +281,6 @@ def main():
                                     current_hier_path += f"{gitlab_sep}{segment}"
                                 labels_to_apply_names.append(f"{area_prefix}{current_hier_path}")
                         logger.info(f"  Prepared Area Path '{ado_area_path}' as labels with strategy '{strategy}'")
-                # --- End Area Path Migration ---
                 
                 final_gl_labels = []
                 for label_name in list(set(labels_to_apply_names)): 
@@ -258,13 +291,13 @@ def main():
                 
                 item_payload = {'title': title, 'description': final_description_for_gitlab, 'labels': final_gl_labels}
 
-                # --- Handle Iteration Path to GitLab Milestone ---
                 if script_config.get('migrate_iteration_paths_to_milestones', False) and ado_iteration_path:
+                    # ... (milestone logic) ...
                     logger.debug(f"  Processing Iteration Path: {ado_iteration_path}")
                     milestone_title_map = script_config.get('iteration_path_to_milestone_title_map', {})
                     milestone_title = milestone_title_map.get(ado_iteration_path)
                     
-                    if not milestone_title: # Default to last segment of the path
+                    if not milestone_title: 
                         path_segments = [seg.strip() for seg in ado_iteration_path.split(script_config.get('area_path_level_separator', '\\')) if seg.strip()]
                         if path_segments:
                             milestone_title = path_segments[-1]
@@ -273,11 +306,10 @@ def main():
                         start_date_str, due_date_str = None, None
                         if ado_iteration_path not in iteration_node_cache:
                             logger.debug(f"    Fetching details for Iteration Path node: {ado_iteration_path}")
-                            # 'iterations' is the structure_group for Iteration Paths
                             node_details = ado_client.get_ado_classification_node_details(
                                 ado_wit_client, AZURE_PROJECT, 'iterations', ado_iteration_path, depth=0
                             )
-                            iteration_node_cache[ado_iteration_path] = node_details # Cache even if None
+                            iteration_node_cache[ado_iteration_path] = node_details
                         else:
                             logger.debug(f"    Using cached details for Iteration Path node: {ado_iteration_path}")
                             node_details = iteration_node_cache[ado_iteration_path]
@@ -289,8 +321,6 @@ def main():
                             due_date_str = parse_ado_date_to_gitlab_format(finish_date_raw)
                             logger.debug(f"    ADO Iteration dates: Start='{start_date_raw}' -> '{start_date_str}', Finish='{finish_date_raw}' -> '{due_date_str}'")
                         
-                        # Milestones are typically project-level in GitLab when assigning to issues
-                        # Group milestones also exist. For now, creating/assigning at project level.
                         milestone_obj = gitlab_interaction.get_or_create_gitlab_milestone(
                             gitlab_project, milestone_title, start_date_str, due_date_str
                         )
@@ -301,16 +331,11 @@ def main():
                             logger.warning(f"  Could not find or create GitLab Milestone for Iteration Path: '{ado_iteration_path}' (Title: '{milestone_title}')")
                     else:
                         logger.warning(f"  Could not determine a milestone title for Iteration Path: {ado_iteration_path}")
-                # --- End Iteration Path to Milestone ---
 
                 created_gl_item = None
                 if gitlab_target_type_str == "epic":
-                    # Note: Epics in GitLab don't directly have milestones in the same way issues do.
-                    # If mapping an ADO Epic with an iteration to a GitLab Epic, the milestone might be conceptually linked
-                    # or applied to child issues of the epic.
                     if 'milestone_id' in item_payload:
-                        logger.info(f"  Note: Milestone ID {item_payload['milestone_id']} prepared but GitLab Epics don't directly use project milestones. This might be applied to child issues.")
-                        # del item_payload['milestone_id'] # Or keep it if your workflow uses it differently at epic level via API
+                        logger.info(f"  Note: Milestone ID {item_payload['milestone_id']} prepared but GitLab Epics don't directly use project milestones.")
                     created_gl_item = gitlab_interaction.create_gitlab_epic(gitlab_group, item_payload, ado_work_item_id)
                 else: # issue
                     created_gl_item = gitlab_interaction.create_gitlab_issue(gitlab_project, item_payload, ado_work_item_id)
@@ -324,17 +349,19 @@ def main():
                 else: 
                     logger.error(f"  Failed to create GitLab {gitlab_target_type_str} for ADO #{ado_work_item_id}. Skipping further processing for this item.")
                     continue 
+
             except Exception as e_general_create:
-                logger.error(f"  UNEXPECTED ERROR during item creation phase for ADO #{ado_work_item_id}.", exc_info=True)
+                logger.error(f"  UNEXPECTED ERROR during item creation phase for ADO #{ado_work_item_id}: {e_general_create}", exc_info=True) # Added error object to log
                 continue
 
         # --- Migrate Comments (with images) ---
-        # (Comment migration logic remains the same as in ado_gitlab_migration_script_full_v6) ...
         if script_config.get('migrate_comments', False) and gitlab_item_for_comments:
-            logger.info(f"  Fetching comments for ADO #{ado_work_item_id} (GitLab {gitlab_item_type_for_comments} #{gitlab_item_for_comments.iid})...")
+            logger.info(f"  Fetching comments for ADO #{ado_work_item_id} (GitLab {gitlab_item_type_for_comments} #{getattr(gitlab_item_for_comments, 'iid', 'N/A')})...")
+            # Use ado_work_item_details.id directly as ado_work_item_id
             ado_comments_list = ado_client.get_ado_work_item_comments(ado_wit_client, AZURE_PROJECT, ado_work_item_id)
             if ado_comments_list:
-                logger.info(f"  Found {len(ado_comments_list)} comments in ADO. Migrating...")
+                logger.info(f"  Found {len(ado_comments_list)} comments in ADO for #{ado_work_item_id}. Migrating...")
+                # ... (rest of your comment migration logic) ...
                 for ado_comment in ado_comments_list: 
                     try:
                         comment_text_html = ado_comment.text
@@ -345,97 +372,146 @@ def main():
                             )
                         comment_text_md = utils.basic_html_to_markdown(comment_text_html)
 
-                        author_identity = ado_comment.created_by
+                        # --- Get author and timestamp from the ADO work item detail for comments if needed ---
+                        # This part assumes ado_comment object has 'created_by' and 'created_date'
+                        # If not, you might need to adjust where you get this info.
+                        # The `ado_work_item_details` has `CreatedDate` and `CreatedBy` for the main item.
+                        # ADO comments usually have their own `createdBy` and `createdDate`.
+                        author_identity = getattr(ado_comment, 'created_by', None) # Make sure ado_comment has this
+                        if not author_identity: # Fallback if comment object itself doesn't have it
+                            author_identity = ado_work_item_details.fields.get("System.CreatedBy")
+
                         author_repr = utils.get_ado_user_representation(author_identity, script_config)
-                        ts_dt = ado_comment.created_date
-                        if ts_dt.tzinfo is None: ts_dt_utc = ts_dt.replace(tzinfo=timezone.utc)
-                        else: ts_dt_utc = ts_dt.astimezone(timezone.utc)
-                        ts_str = ts_dt_utc.strftime('%Y-%m-%d %H:%M:%S UTC')
-                        header_format = script_config.get('migrated_comment_header_format', "**Comment from ADO by {author} on {timestamp}:**\n\n")
-                        header = header_format.format(author=author_repr, timestamp=ts_str)
-                        note_body = f"{header}{comment_text_md}"
-                        payload = {'body': note_body}
-                        try: payload['created_at'] = ts_dt_utc.isoformat()
-                        except: pass 
                         
-                        gitlab_interaction.add_gitlab_note(gitlab_item_for_comments, payload, ado_comment.id, gitlab_item_type_for_comments, gitlab_item_for_comments.iid)
+                        ts_dt = getattr(ado_comment, 'created_date', None) # Make sure ado_comment has this
+                        if not ts_dt: # Fallback
+                            ts_dt_str = ado_work_item_details.fields.get("System.CreatedDate")
+                            if ts_dt_str: ts_dt = datetime.fromisoformat(ts_dt_str.replace('Z', '+00:00'))
+                        
+                        if ts_dt:
+                            if ts_dt.tzinfo is None: ts_dt_utc = ts_dt.replace(tzinfo=timezone.utc)
+                            else: ts_dt_utc = ts_dt.astimezone(timezone.utc)
+                            ts_str = ts_dt_utc.strftime('%Y-%m-%d %H:%M:%S UTC')
+                            header_format = script_config.get('migrated_comment_header_format', "**Comment from ADO by {author} on {timestamp}:**\n\n")
+                            header = header_format.format(author=author_repr, timestamp=ts_str)
+                            note_body = f"{header}{comment_text_md}"
+                            payload = {'body': note_body}
+                            try: payload['created_at'] = ts_dt_utc.isoformat()
+                            except: pass 
+                            
+                            gitlab_interaction.add_gitlab_note(gitlab_item_for_comments, payload, ado_comment.id, gitlab_item_type_for_comments, getattr(gitlab_item_for_comments, 'iid', 'N/A'))
+                        else:
+                            logger.warning(f"    Could not determine timestamp for ADO comment ID {ado_comment.id if ado_comment else 'N/A'}. Skipping note creation.")
+                            
                     except Exception as e_comm_indiv: 
                         logger.warning(f"    Error processing individual ADO comment ID {ado_comment.id if ado_comment else 'N/A'}. Error: {e_comm_indiv}", exc_info=True)
             else:
                 logger.info(f"  No comments found in ADO for #{ado_work_item_id} to migrate.")
         
     # --- Phase 2: Link Parent/Child and Other Relations ---
-    # (Link migration logic remains the same as in ado_gitlab_migration_script_full_v6) ...
     logger.info("--- Phase 2: Linking Parent/Child and Other Relations ---")
-    if not ado_work_item_refs: logger.info("No work items to process for linking (based on initial query).")
-    else:
-        for wi_ref_source in ado_work_item_refs:
-            source_ado_id = wi_ref_source.id
-            if source_ado_id not in ado_id_to_gitlab: continue 
-            
-            source_gitlab_info = ado_id_to_gitlab[source_ado_id]
-            logger.info(f"Processing links for source ADO #{source_ado_id} (GitLab {source_gitlab_info['type']} #{source_gitlab_info['id']})...")
-            
-            ado_item_with_relations = ado_client.get_ado_work_item_details(ado_wit_client, source_ado_id, expand_relations=True)
-            if not ado_item_with_relations:
-                logger.warning(f"  Could not get relations for ADO source #{source_ado_id}. Skipping link processing for this item.")
-                continue
-            
-            relations = getattr(ado_item_with_relations, "relations", None)
-            if relations:
-                for rel in relations:
-                    target_ado_id = -1 
-                    try:
-                        rel_url_str = getattr(rel, 'url', "")
-                        if not rel_url_str:
-                            logger.debug(f"  Skipping relation with empty URL for source ADO #{source_ado_id}")
-                            continue
-                        
-                        work_item_url_pattern = r"https?://[^/]+(?:/[^/]+)?/[^/]+/_apis/wit/workitems/(\d+)"
-                        match = re.search(work_item_url_pattern, rel_url_str, re.IGNORECASE)
+    # Important: For relation fetching, you DO need to expand relations.
+    # You can either:
+    # 1. Re-fetch items that need relation processing (if not too many)
+    # 2. Or, if expand_relations=True was used in the batch get, you can use those.
+    #    Let's assume for now we will re-fetch with expand=True for linking phase
+    #    to keep the initial batch payload smaller if relations aren't always needed.
 
-                        if not match:
-                            logger.debug(f"  Skipping non-standard work item relation URL: '{rel_url_str}' for source ADO #{source_ado_id}")
-                            continue
-                        target_ado_id_str = match.group(1)
-                        target_ado_id = int(target_ado_id_str)
-                        
-                        ado_link_ref_name = rel.rel 
-                        ado_link_friendly_name = getattr(rel, 'attributes', {}).get('name', 'UnknownLinkType')
-                        logger.debug(f"  Found ADO link: Source ADO #{source_ado_id} --[{ado_link_friendly_name} ({ado_link_ref_name})]--> Target ADO #{target_ado_id}")
-                        
-                        if target_ado_id not in ado_id_to_gitlab:
-                            logger.info(f"    Target ADO #{target_ado_id} for link from ADO #{source_ado_id} was not mapped. Skipping.")
-                            continue
-                        target_gitlab_info = ado_id_to_gitlab[target_ado_id]
-                        
-                        is_hierarchical, parent_gl, child_gl = False, None, None
-                        if ado_link_ref_name == "System.LinkTypes.Hierarchy-Forward": 
-                            parent_gl, child_gl, is_hierarchical = target_gitlab_info, source_gitlab_info, True
-                        elif ado_link_ref_name == "System.LinkTypes.Hierarchy-Reverse":
-                            parent_gl, child_gl, is_hierarchical = source_gitlab_info, target_gitlab_info, True
-                        
-                        if is_hierarchical:
-                            if parent_gl['type'] == 'epic' and child_gl['type'] == 'issue':
-                                gitlab_interaction.link_gitlab_epic_issue(gitlab_group, parent_gl['id'], child_gl['gitlab_global_id'])
-                            elif parent_gl['type'] == 'issue' and child_gl['type'] == 'issue':
-                                gitlab_interaction.link_gitlab_issues(gitlab_project, parent_gl['id'], child_gl['id'], 'relates_to')
-                            continue 
-                        
-                        mapped_gl_link_type = script_config.get('ado_to_gitlab_link_type_mapping', {}).get(ado_link_ref_name) or \
-                                              script_config.get('default_gitlab_link_type')
-                        if mapped_gl_link_type and mapped_gl_link_type not in ["_parent_of_current_", "_child_of_current_"]:
-                            if source_gitlab_info['type'] == 'issue' and target_gitlab_info['type'] == 'issue':
-                                gitlab_interaction.link_gitlab_issues(gitlab_project, source_gitlab_info['id'], target_gitlab_info['id'], mapped_gl_link_type)
-                            else: 
-                                logger.info(f"    Skipping generic link type '{mapped_gl_link_type}': Both items must be GitLab 'issues'.")
-                        elif ado_link_ref_name not in script_config.get('ado_to_gitlab_link_type_mapping', {}):
-                            if script_config.get('ado_to_gitlab_link_type_mapping', {}).get(ado_link_ref_name) is not None:
-                                logger.info(f"    ADO Link type '{ado_link_ref_name}' ({ado_link_friendly_name}) from ADO #{source_ado_id} to #{target_ado_id} is not mapped and no default applicable. Skipping.")
-                    except Exception as e_rel_proc: 
-                        logger.warning(f"    Error processing relation for ADO source {source_ado_id} to target {target_ado_id}: {getattr(rel, 'url', 'N/A')}. Error: {e_rel_proc}", exc_info=True)
-            else: 
-                logger.debug(f"  No relations found for ADO source #{source_ado_id}.")
+    if not all_ado_ids: # Use all_ado_ids from the initial WIQL query
+        logger.info("No work items to process for linking (based on initial query).")
+    else:
+        # Chunk the IDs again for fetching relations if needed
+        for i in range(0, len(all_ado_ids), chunk_size):
+            id_chunk_for_relations = all_ado_ids[i:i + chunk_size]
+            logger.info(f"Fetching relations for ADO ID chunk: {id_chunk_for_relations[:3]}... (Total: {len(id_chunk_for_relations)})")
+
+            # Fetch with expand_relations=True this time
+            items_with_relations_batch = ado_client.get_ado_work_items_batch(
+                ado_wit_client,
+                id_chunk_for_relations,
+                fields=["System.Id", "System.Links.LinkType"], # Only need ID and links for this phase
+                expand_relations=True,
+                error_policy="omit"
+            )
+
+            for ado_item_with_relations in items_with_relations_batch:
+                if not ado_item_with_relations or not hasattr(ado_item_with_relations, 'id'):
+                    continue
+                source_ado_id = ado_item_with_relations.id
+                if source_ado_id not in ado_id_to_gitlab: 
+                    logger.debug(f"  Source ADO #{source_ado_id} not in mapping. Skipping link processing for it.")
+                    continue 
+            
+                source_gitlab_info = ado_id_to_gitlab[source_ado_id]
+                logger.info(f"Processing links for source ADO #{source_ado_id} (GitLab {source_gitlab_info['type']} #{source_gitlab_info['id']})...")
+            
+                relations = getattr(ado_item_with_relations, "relations", None)
+                if relations:
+                    # ... (rest of your relation processing logic remains the same) ...
+                    for rel in relations:
+                        target_ado_id = -1 
+                        try:
+                            rel_url_str = getattr(rel, 'url', "")
+                            if not rel_url_str:
+                                logger.debug(f"  Skipping relation with empty URL for source ADO #{source_ado_id}")
+                                continue
+                            
+                            work_item_url_pattern = r"https?://[^/]+(?:/[^/]+)?/[^/]+/_apis/wit/workitems/(\d+)"
+                            match_re = re.search(work_item_url_pattern, rel_url_str, re.IGNORECASE)
+
+                            if not match_re:
+                                logger.debug(f"  Skipping non-standard work item relation URL: '{rel_url_str}' for source ADO #{source_ado_id}")
+                                continue
+                            target_ado_id_str = match_re.group(1)
+                            target_ado_id = int(target_ado_id_str)
+                            
+                            ado_link_ref_name = rel.rel 
+                            ado_link_friendly_name = getattr(rel, 'attributes', {}).get('name', 'UnknownLinkType')
+                            logger.debug(f"  Found ADO link: Source ADO #{source_ado_id} --[{ado_link_friendly_name} ({ado_link_ref_name})]--> Target ADO #{target_ado_id}")
+                            
+                            if target_ado_id not in ado_id_to_gitlab:
+                                logger.info(f"    Target ADO #{target_ado_id} for link from ADO #{source_ado_id} was not mapped. Skipping.")
+                                continue
+                            target_gitlab_info = ado_id_to_gitlab[target_ado_id]
+                            
+                            is_hierarchical, parent_gl, child_gl = False, None, None
+                            if ado_link_ref_name == "System.LinkTypes.Hierarchy-Forward": 
+                                parent_gl, child_gl, is_hierarchical = target_gitlab_info, source_gitlab_info, True
+                            elif ado_link_ref_name == "System.LinkTypes.Hierarchy-Reverse":
+                                parent_gl, child_gl, is_hierarchical = source_gitlab_info, target_gitlab_info, True
+                            
+                            if is_hierarchical:
+                                if parent_gl['type'] == 'epic' and child_gl['type'] == 'issue':
+                                    gitlab_interaction.link_gitlab_epic_issue(gitlab_group, parent_gl['id'], child_gl['gitlab_global_id'])
+                                elif parent_gl['type'] == 'issue' and child_gl['type'] == 'issue': # Parent/child between issues (Task > Task)
+                                     # GitLab doesn't have direct parent/child for issues like ADO tasks.
+                                     # It uses "blocks" or "is_blocked_by" or just "relates_to".
+                                     # Or child issues of an Epic.
+                                     # For now, linking as 'relates_to'. You might want a specific config.
+                                    logger.info(f"    Mapping ADO Issue-to-Issue hierarchy (ADO Task to Task) as 'relates_to' in GitLab for GL #{parent_gl['id']} and GL #{child_gl['id']}.")
+                                    gitlab_interaction.link_gitlab_issues(gitlab_project, parent_gl['id'], child_gl['id'], 'relates_to')
+                                else:
+                                    logger.info(f"    Skipping hierarchical link: Unsupported GitLab type combination. Parent: {parent_gl['type']}, Child: {child_gl['type']}")
+                                continue 
+                            
+                            mapped_gl_link_type = script_config.get('ado_to_gitlab_link_type_mapping', {}).get(ado_link_ref_name) or \
+                                                  script_config.get('default_gitlab_link_type')
+                            if mapped_gl_link_type and mapped_gl_link_type not in ["_parent_of_current_", "_child_of_current_"]:
+                                if source_gitlab_info['type'] == 'issue' and target_gitlab_info['type'] == 'issue':
+                                    gitlab_interaction.link_gitlab_issues(gitlab_project, source_gitlab_info['id'], target_gitlab_info['id'], mapped_gl_link_type)
+                                else: 
+                                    logger.info(f"    Skipping generic link type '{mapped_gl_link_type}': Both items must be GitLab 'issues' for this link type.")
+                            elif ado_link_ref_name not in script_config.get('ado_to_gitlab_link_type_mapping', {}):
+                                if script_config.get('ado_to_gitlab_link_type_mapping', {}).get(ado_link_ref_name) is not None: # Only if explicitly set to null in mapping
+                                    logger.info(f"    ADO Link type '{ado_link_ref_name}' ({ado_link_friendly_name}) from ADO #{source_ado_id} to #{target_ado_id} is explicitly ignored in config. Skipping.")
+                                # else implicitly skipped if not in mapping and no default or default is null
+                        except Exception as e_rel_proc: 
+                            logger.warning(f"    Error processing relation for ADO source {source_ado_id} to target {target_ado_id}: {getattr(rel, 'url', 'N/A')}. Error: {e_rel_proc}", exc_info=True)
+                else: 
+                    logger.debug(f"  No relations found for ADO source #{source_ado_id} (expanded fetch).")
+            if not items_with_relations_batch: # If a whole chunk fetch failed.
+                 logger.warning(f"Relation fetching failed for chunk starting with ADO ID {id_chunk_for_relations[0] if id_chunk_for_relations else 'N/A'}")
+
 
     logger.info("--- Migration Script Finished ---")
 
