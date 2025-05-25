@@ -301,6 +301,7 @@ def main():
     
     # --- Define fields for the batch get_work_items_batch call ---
     ado_priority_field_ref = script_config.get('ado_priority_field_ref_name')
+    ado_severity_field_ref = script_config.get('ado_severity_field_ref_name')
     fields_for_batch_get = [
         "System.Id", "System.Title", "System.WorkItemType", 
         "System.State", "System.Tags", "System.CreatedDate", "System.CreatedBy", # Added CreatedDate/By for comments
@@ -317,6 +318,9 @@ def main():
             
     if ado_priority_field_ref and ado_priority_field_ref not in fields_for_batch_get:
         fields_for_batch_get.append(ado_priority_field_ref)
+        
+    if ado_severity_field_ref and ado_severity_field_ref not in fields_for_batch_get:
+        fields_for_batch_get.append(ado_severity_field_ref)
     
     # Get all ADO work item references (just IDs primarily)
     ado_work_item_refs = ado_client.query_ado_work_item_refs(ado_wit_client, AZURE_PROJECT, fields_for_wiql_query)
@@ -440,6 +444,7 @@ def main():
                         ado_type = ado_work_item_details.fields.get("System.WorkItemType", "WorkItem")
                         ado_state = ado_work_item_details.fields.get("System.State", "Undefined")
                         ado_priority_val = ado_work_item_details.fields.get(ado_priority_field_ref) if ado_priority_field_ref else None
+                        ado_severity_val = ado_work_item_details.fields.get(ado_severity_field_ref) if ado_severity_field_ref else None
                         ado_tags_string = ado_work_item_details.fields.get("System.Tags", "")
                         ado_area_path = ado_work_item_details.fields.get("System.AreaPath", "")
                         ado_iteration_path = ado_work_item_details.fields.get("System.IterationPath", "")
@@ -447,6 +452,7 @@ def main():
                         # Create migration footer with metadata
                         migration_footer = f"\n\n---\nMigrated from ADO #{ado_work_item_id} (Type: {ado_type}, State: {ado_state}"
                         if ado_priority_val is not None: migration_footer += f", Priority: {ado_priority_val}"
+                        if ado_severity_val is not None: migration_footer += f", Severity: {ado_severity_val}"
                         if ado_tags_string: migration_footer += f", Original ADO Tags: {ado_tags_string}"
                         if ado_area_path: migration_footer += f", Original Area: {ado_area_path}"
                         if ado_iteration_path: migration_footer += f", Original Iteration: {ado_iteration_path}"
@@ -476,6 +482,13 @@ def main():
                                 labels_to_apply_names.append(priority_label)
                             else: 
                                 labels_to_apply_names.append(f"{script_config.get('unmapped_ado_priority_label_prefix', 'ado_priority::')}{ado_priority_val}")
+                        
+                        if ado_severity_val is not None and script_config.get('ado_severity_to_gitlab_label'):
+                            severity_label = script_config['ado_severity_to_gitlab_label'].get(ado_severity_val)
+                            if severity_label: 
+                                labels_to_apply_names.append(severity_label)
+                            else: 
+                                labels_to_apply_names.append(f"{script_config.get('unmapped_ado_severity_label_prefix', 'ado_severity::')}{ado_severity_val}")
                         
                         if gitlab_target_type_str != 'epic' and ado_type: 
                             labels_to_apply_names.append(f"ado_type::{ado_type}")

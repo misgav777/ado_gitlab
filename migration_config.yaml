@@ -66,17 +66,31 @@ ado_priority_field_ref_name: "Microsoft.VSTS.Common.Priority"
 # Maps ADO Priority values (typically integers) to GitLab labels.
 # Check your ADO process template for actual priority values.
 ado_priority_to_gitlab_label:
-  1: "priority::1-Critical"
-  2: "priority::2-High"
-  3: "priority::3-Medium"
-  4: "priority::4-Low"
+  1: "priority::1"
+  2: "priority::2"
+  3: "priority::3"
+  4: "priority::4"
+  5: "priority::5"
 
-# --- Default label prefix for unmapped ADO states or priorities ---
+# --- ADO Field for Severity (Optional) ---
+# Specify the ADO field reference name for severity (e.g., "Microsoft.VSTS.Common.Severity")
+ado_severity_field_ref_name: "Microsoft.VSTS.Common.Severity"
+
+# --- ADO Severity Value to GitLab Label Mapping (Optional) ---
+# Maps ADO Severity values to GitLab labels
+ado_severity_to_gitlab_label:
+  1: "severity::1-Critical"
+  2: "severity::2-High"
+  3: "severity::3-Medium"
+  4: "severity::4-Low"
+
+# --- Default label prefix for unmapped ADO states or priorities or severities ---
 # If an ADO state "Investigate" is not in ado_state_to_gitlab_labels, and this prefix is "ado_state::",
 # it will become the label "ado_state::Investigate".
 # Set to empty "" to use the direct ADO state/priority value as the label if unmapped.
 unmapped_ado_state_label_prefix: "state::"
 unmapped_ado_priority_label_prefix: "priority::"
+unmapped_ado_severity_label_prefix: "severity::"
 
 # --- GitLab label color strategy ---
 # "random": Assigns a random color to newly created labels.
