@@ -75,8 +75,8 @@ ado_priority_to_gitlab_label:
 # If an ADO state "Investigate" is not in ado_state_to_gitlab_labels, and this prefix is "ado_state::",
 # it will become the label "ado_state::Investigate".
 # Set to empty "" to use the direct ADO state/priority value as the label if unmapped.
-unmapped_ado_state_label_prefix: "ado_state::"
-unmapped_ado_priority_label_prefix: "ado_priority::"
+unmapped_ado_state_label_prefix: "state::"
+unmapped_ado_priority_label_prefix: "priority::"
 
 # --- GitLab label color strategy ---
 # "random": Assigns a random color to newly created labels.

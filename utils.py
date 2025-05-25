@@ -10,6 +10,7 @@ import random # Added for filename fallback if not already present
 
 logger = logging.getLogger('ado_gitlab_migrator')
 
+
 try:
     from markdownify import markdownify as md
     MARKDOWNIFY_AVAILABLE = True
@@ -40,6 +41,36 @@ def get_ado_user_representation(ado_user_identity, config_data):
     if unique_name and unique_name.lower() != display_name.lower(): 
         user_details += f" [{unique_name}]"
     return user_details
+
+def html_to_markdown(html_content):
+    """
+    Convert HTML to Markdown using markdownify library if available,
+    otherwise fall back to basic conversion.
+    """
+    if not html_content:
+        return ""
+    
+    if MARKDOWNIFY_AVAILABLE:
+        try:
+            # Use markdownify with comprehensive options
+            markdown_text = md(
+                html_content,
+                heading_style="ATX",  # Use # style headings
+                bullets="-",          # Use - for bullets
+                strip=['script', 'style'],  # Remove script and style tags
+                convert=['p', 'br', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 
+                        'strong', 'b', 'em', 'i', 'u', 'a', 'img', 'ul', 'ol', 'li',
+                        'blockquote', 'code', 'pre', 'hr', 'table', 'thead', 'tbody',
+                        'tr', 'th', 'td', 'div', 'span']
+            )
+            logger.debug("Successfully converted HTML to Markdown using markdownify")
+            return markdown_text.strip()
+        except Exception as e:
+            logger.warning(f"markdownify failed, falling back to basic conversion: {e}")
+            return basic_html_to_markdown(html_content)
+    else:
+        logger.debug("Using basic HTML to Markdown conversion")
+        return basic_html_to_markdown(html_content)
 
 def basic_html_to_markdown(html_content):
     """
