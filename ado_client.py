@@ -1,5 +1,7 @@
 # ado_gitlab_migration/ado_client.py
 import logging
+import requests
+import base64
 from azure.devops.connection import Connection
 from msrest.authentication import BasicAuthentication
 # from azure.devops.exceptions import AzureDevOpsServiceError # For more specific error handling if needed
@@ -133,11 +135,81 @@ def get_ado_work_items_batch(wit_client, work_item_ids_list, project_name=None, 
 
 
 def get_ado_work_item_comments(wit_client, azure_project_name, work_item_id, top=200, order="asc"):
-    """Fetches comments for an ADO work item."""
+    """Fetches comments for an ADO work item using direct REST API call.
+    Since the Azure DevOps Python SDK doesn't support comments API directly,
+    we use the requests library to call the REST API.
+    """
     try:
-        ado_comments_result = wit_client.get_comments(project=azure_project_name, work_item_id=int(work_item_id), top=top, order=order)
-        if hasattr(ado_comments_result, 'comments') and ado_comments_result.comments:
-            return sorted(ado_comments_result.comments, key=lambda c: c.created_date) 
+        # Get organization URL from the client's connection
+        org_url = wit_client._client.config.base_url
+        
+        # This is a hack to find org_url, based on how Azure DevOps SDKs URL format is
+        # Example: https://dev.azure.com/org_name
+        # or: https://org_name.visualstudio.com
+        if not org_url.endswith('/'): 
+            org_url += '/'
+        
+        # Build the API URL
+        # Documentation: https://learn.microsoft.com/en-us/rest/api/azure/devops/wit/comments/list?view=azure-devops-rest-7.0
+        url = f"{org_url}{azure_project_name}/_apis/wit/workitems/{work_item_id}/comments"
+        
+        # Add query parameters
+        params = {
+            'api-version': '7.0-preview',  # Using API version 7.0-preview which supports comments
+            '$top': top,
+            'order': order
+        }
+        
+        # Get PAT from connection credentials
+        # The credential is stored as ':PAT' in the BasicAuthentication object
+        auth_value = wit_client._client.config.credentials.password
+        
+        # Create auth header with PAT
+        auth_header = f"Basic {base64.b64encode(f':{auth_value}'.encode()).decode()}"
+        headers = {
+            'Authorization': auth_header,
+            'Content-Type': 'application/json'
+        }
+        
+        # Make the REST call
+        response = requests.get(url, params=params, headers=headers)
+        
+        # Process the response
+        if response.status_code == 200:
+            comments_data = response.json()
+            if 'comments' in comments_data and comments_data['comments']:
+                # Convert to objects with needed attributes for compatibility
+                comment_objects = []
+                for comment in comments_data['comments']:
+                    # Create a simple object to match the expected structure
+                    class CommentObj:
+                        pass
+                    
+                    c = CommentObj()
+                    c.id = comment.get('id')
+                    c.text = comment.get('text', '')
+                    c.created_date = comment.get('createdDate')
+                    
+                    # Add created_by information if available
+                    if 'createdBy' in comment:
+                        class IdentityRef:
+                            pass
+                        
+                        identity = IdentityRef()
+                        identity.display_name = comment['createdBy'].get('displayName', '')
+                        identity.unique_name = comment['createdBy'].get('uniqueName', '')
+                        identity.id = comment['createdBy'].get('id', '')
+                        c.created_by = identity
+                    
+                    comment_objects.append(c)
+                
+                return sorted(comment_objects, key=lambda c: c.created_date)
+            
+        # If we get here, no comments were found or there was an error
+        if response.status_code != 200:
+            logger.warning(f"Failed to fetch comments for ADO #{work_item_id}. Status code: {response.status_code}, Response: {response.text}")
+        else:
+            logger.info(f"No comments found for work item #{work_item_id}")
         return []
     except Exception as e:
         logger.error(f"Failed to fetch comments for ADO work item #{work_item_id}. Error: {e}", exc_info=True)

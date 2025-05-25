@@ -1,13 +1,39 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
 # Virtual environments
 venv/
 env/
-ENV/
 
-
-# Local development
+# Local development settings
 .env
-.venv
-env/
-__pycache__
-*log.txt
-*.json
+.vscode/
+.idea/
+
+# Migration files and logs
+*_migration_log.txt
+*_ado_gitlab_map.json
+migration_checkpoint.json
+
+# Database files
+*.db
+
+# Logs
+logs/
+*.log
+
+# Mac specific
+.DS_Store
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.swp
+*.swo
+
+# Docker volumes
+postgres_data/
+**/.claude/settings.local.json

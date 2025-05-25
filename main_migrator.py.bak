@@ -9,7 +9,6 @@ import asyncio
 import aiohttp
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
-import time
 
 
 try:
@@ -44,8 +43,7 @@ if not logger.handlers:
         file_handler.setFormatter(file_formatter)
         file_handler.setLevel(logging.INFO) # Or DEBUG
         logger.addHandler(file_handler)
-    except Exception as e: 
-        print(f"CRITICAL: Failed to configure file logger for {LOG_FILE}: {e}.")
+    except Exception as e: print(f"CRITICAL: Failed to configure file logger for {LOG_FILE}: {e}.")
     console_handler = logging.StreamHandler(sys.stdout)
     console_formatter = logging.Formatter('%(levelname)s - %(message)s')
     console_handler.setFormatter(console_formatter)
@@ -412,11 +410,12 @@ def main():
                         processing_checkpoint['failed_ids'].append(ado_work_item_id)
                         chunk_failed += 1
                         total_failed += 1
+
                 else: 
                     try:
                         # Need to create new GitLab item from ADO data
                         title = ado_work_item_details.fields.get("System.Title", f"Untitled ADO Item {ado_work_item_id}")
-
+                
                         # Build concatenated description from all configured description fields
                         concatenated_description_html = ""
                         first_desc_field = True
@@ -443,7 +442,7 @@ def main():
                         ado_tags_string = ado_work_item_details.fields.get("System.Tags", "")
                         ado_area_path = ado_work_item_details.fields.get("System.AreaPath", "")
                         ado_iteration_path = ado_work_item_details.fields.get("System.IterationPath", "")
-
+                
                         # Create migration footer with metadata
                         migration_footer = f"\n\n---\nMigrated from ADO #{ado_work_item_id} (Type: {ado_type}, State: {ado_state}"
                         if ado_priority_val is not None: migration_footer += f", Priority: {ado_priority_val}"
@@ -615,6 +614,20 @@ def main():
                         total_failed += 1
                         continue
                 
+                # Add checkpoint saving after each item or at regular intervals
+                if total_processed % checkpoint_frequency == 0:
+                    save_checkpoint(processing_checkpoint['processed_ids'], len(all_ado_ids))
+                    logger.info(f"Progress checkpoint saved: {total_processed}/{len(all_ado_ids)} items processed ({total_successful} successful, {total_failed} failed)")
+            except Exception as e_outer:
+                # Catch any unexpected errors at the outer level to ensure the loop continues
+                logger.error(f"Unexpected outer error processing work item: {e_outer}", exc_info=True)
+                # Still try to increment counters if we have the ID
+                current_id = id_chunk[chunk_processed-1] if chunk_processed > 0 and chunk_processed <= len(id_chunk) else "Unknown"
+                logger.error(f"Error occurred while processing item with possible ID: {current_id}")
+                processing_checkpoint['failed_ids'].append(current_id)
+                chunk_failed += 1
+                total_failed += 1
+
                 # --- Migrate Comments (with images) ---
                 if script_config.get('migrate_comments', False) and gitlab_item_for_comments:
                     logger.info(f"  Fetching comments for ADO #{ado_work_item_id} (GitLab {gitlab_item_type_for_comments} #{getattr(gitlab_item_for_comments, 'iid', 'N/A')})...")
@@ -637,61 +650,45 @@ def main():
                                 if not author_identity: # Fallback if comment object doesn't have author
                                     author_identity = ado_work_item_details.fields.get("System.CreatedBy")
 
-                                author_repr = utils.get_ado_user_representation(author_identity, script_config)
-                                
-                                ts_dt = getattr(ado_comment, 'created_date', None) # Make sure ado_comment has this
-                                
-                                # Handle string date from REST API or datetime from SDK
-                                if isinstance(ts_dt, str):
-                                    # Use the utility function from utils.py to parse the date
-                                    ts_dt = utils.parse_ado_date(ts_dt)
-                                    if not ts_dt:
-                                        logger.warning(f"    Could not parse comment date: {getattr(ado_comment, 'created_date', None)}")
-                                elif not ts_dt: # Fallback to work item creation date
-                                    ts_dt_str = ado_work_item_details.fields.get("System.CreatedDate")
-                                    if ts_dt_str: 
-                                        # Use the utility function from utils.py to parse the date
-                                        ts_dt = utils.parse_ado_date(ts_dt_str)
-                                        if not ts_dt:
-                                            logger.warning(f"    Could not parse work item date: {ts_dt_str}")
-                                            ts_dt = datetime.now(timezone.utc)
-                                
-                                if ts_dt:
-                                    # Since our utils.parse_ado_date already ensures timezone info is set
-                                    # and returns a datetime object, we can simplify this part
-                                    ts_dt_utc = ts_dt.astimezone(timezone.utc)
-                                    ts_str = ts_dt_utc.strftime('%Y-%m-%d %H:%M:%S UTC')
-                                    header_format = script_config.get('migrated_comment_header_format', "**Comment from ADO by {author} on {timestamp}:**\n\n")
-                                    header = header_format.format(author=author_repr, timestamp=ts_str)
-                                    note_body = f"{header}{comment_text_md}"
-                                    payload = {'body': note_body}
-                                    try: 
-                                        payload['created_at'] = ts_dt_utc.isoformat()
-                                    except: 
-                                        pass 
-                                    
-                                    gitlab_interaction.add_gitlab_note(gitlab_item_for_comments, payload, ado_comment.id, gitlab_item_type_for_comments, getattr(gitlab_item_for_comments, 'iid', 'N/A'))
-                                else:
-                                    logger.warning(f"    Could not determine timestamp for ADO comment ID {ado_comment.id if ado_comment else 'N/A'}. Skipping note creation.")
-                                    
-                            except Exception as e_comm_indiv: 
-                                logger.warning(f"    Error processing individual ADO comment ID {ado_comment.id if ado_comment else 'N/A'}. Error: {e_comm_indiv}", exc_info=True)
+                        author_repr = utils.get_ado_user_representation(author_identity, script_config)
+                        
+                        ts_dt = getattr(ado_comment, 'created_date', None) # Make sure ado_comment has this
+                        
+                        # Handle string date from REST API or datetime from SDK
+                        if isinstance(ts_dt, str):
+                            # Use the utility function from utils.py to parse the date
+                            ts_dt = utils.parse_ado_date(ts_dt)
+                            if not ts_dt:
+                                logger.warning(f"    Could not parse comment date: {getattr(ado_comment, 'created_date', None)}")
+                        elif not ts_dt: # Fallback to work item creation date
+                            ts_dt_str = ado_work_item_details.fields.get("System.CreatedDate")
+                            if ts_dt_str: 
+                                # Use the utility function from utils.py to parse the date
+                                ts_dt = utils.parse_ado_date(ts_dt_str)
+                                if not ts_dt:
+                                    logger.warning(f"    Could not parse work item date: {ts_dt_str}")
+                                    ts_dt = datetime.now(timezone.utc)
+                        
+                        if ts_dt:
+                            # Since our utils.parse_ado_date already ensures timezone info is set
+                            # and returns a datetime object, we can simplify this part
+                            ts_dt_utc = ts_dt.astimezone(timezone.utc)
+                            ts_str = ts_dt_utc.strftime('%Y-%m-%d %H:%M:%S UTC')
+                            header_format = script_config.get('migrated_comment_header_format', "**Comment from ADO by {author} on {timestamp}:**\n\n")
+                            header = header_format.format(author=author_repr, timestamp=ts_str)
+                            note_body = f"{header}{comment_text_md}"
+                            payload = {'body': note_body}
+                            try: payload['created_at'] = ts_dt_utc.isoformat()
+                            except: pass 
+                            
+                            gitlab_interaction.add_gitlab_note(gitlab_item_for_comments, payload, ado_comment.id, gitlab_item_type_for_comments, getattr(gitlab_item_for_comments, 'iid', 'N/A'))
+                        else:
+                            logger.warning(f"    Could not determine timestamp for ADO comment ID {ado_comment.id if ado_comment else 'N/A'}. Skipping note creation.")
+                            
+                        except Exception as e_comm_indiv: 
+                            logger.warning(f"    Error processing individual ADO comment ID {ado_comment.id if ado_comment else 'N/A'}. Error: {e_comm_indiv}", exc_info=True)
                     else:
                         logger.info(f"  No comments found in ADO for #{ado_work_item_id} to migrate.")
-        
-                # Add checkpoint saving after each item or at regular intervals
-                if total_processed % checkpoint_frequency == 0:
-                    save_checkpoint(processing_checkpoint['processed_ids'], len(all_ado_ids))
-                    logger.info(f"Progress checkpoint saved: {total_processed}/{len(all_ado_ids)} items processed ({total_successful} successful, {total_failed} failed)")
-            except Exception as e_outer:
-                # Catch any unexpected errors at the outer level to ensure the loop continues
-                logger.error(f"Unexpected outer error processing work item: {e_outer}", exc_info=True)
-                # Still try to increment counters if we have the ID
-                current_id = id_chunk[chunk_processed-1] if chunk_processed > 0 and chunk_processed <= len(id_chunk) else "Unknown"
-                logger.error(f"Error occurred while processing item with possible ID: {current_id}")
-                processing_checkpoint['failed_ids'].append(current_id)
-                chunk_failed += 1
-                total_failed += 1
         
         # Report statistics for this chunk
         logger.info(f"Chunk complete: {chunk_processed} items processed ({chunk_successful} successful, {chunk_failed} failed)")
@@ -719,7 +716,7 @@ def main():
     
     # Final checkpoint save
     save_checkpoint(processing_checkpoint['processed_ids'], len(all_ado_ids))
-    
+        
     # --- Phase 2: Link Parent/Child and Other Relations ---
     logger.info("--- Phase 2: Linking Parent/Child and Other Relations ---")
     # Important: For relation fetching, you DO need to expand relations.

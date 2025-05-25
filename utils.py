@@ -7,6 +7,7 @@ from urllib.parse import urlparse, unquote
 import base64 
 import time 
 import random # Added for filename fallback if not already present
+from datetime import datetime, timezone
 
 logger = logging.getLogger('ado_gitlab_migrator')
 
@@ -52,16 +53,13 @@ def html_to_markdown(html_content):
     
     if MARKDOWNIFY_AVAILABLE:
         try:
-            # Use markdownify with comprehensive options
+            # Use markdownify with more limited options to avoid conflict
+            # The issue is that you can't specify both strip and convert lists
             markdown_text = md(
                 html_content,
                 heading_style="ATX",  # Use # style headings
-                bullets="-",          # Use - for bullets
-                strip=['script', 'style'],  # Remove script and style tags
-                convert=['p', 'br', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 
-                        'strong', 'b', 'em', 'i', 'u', 'a', 'img', 'ul', 'ol', 'li',
-                        'blockquote', 'code', 'pre', 'hr', 'table', 'thead', 'tbody',
-                        'tr', 'th', 'td', 'div', 'span']
+                bullets="-"           # Use - for bullets
+                # Don't specify both strip and convert to avoid the error
             )
             logger.debug("Successfully converted HTML to Markdown using markdownify")
             return markdown_text.strip()
@@ -218,6 +216,111 @@ def download_ado_image(image_url, ado_pat_raw_token, script_config):
     except Exception as e:
         logger.error(f"Unexpected error downloading image {image_url}. Error: {e}", exc_info=True)
         return None, None
+
+def parse_ado_date(date_str):
+    """
+    Parse ADO date string to datetime object.
+    Handles various ISO 8601 formats including those with non-standard millisecond precision.
+    
+    Args:
+        date_str (str): Date string in ISO 8601 format from ADO API
+        
+    Returns:
+        datetime: Parsed datetime object or None if parsing fails
+    """
+    if not date_str:
+        return None
+        
+    try:
+        # Handle if it's already a datetime object
+        if isinstance(date_str, datetime):
+            # Ensure timezone info is set
+            if date_str.tzinfo is None:
+                return date_str.replace(tzinfo=timezone.utc)
+            return date_str
+            
+        # Clean up the string
+        date_str = str(date_str).strip()
+        
+        # Handle 'Z' UTC indicator by converting to +00:00
+        if date_str.endswith('Z'):
+            date_str = date_str[:-1] + '+00:00'
+        
+        # Handle non-standard millisecond precision (e.g., "2024-06-26T08:08:52.22+00:00")
+        # Standard ISO format requires 6 digits for microseconds if any are specified
+        millisecond_match = re.search(r'\.(\d{1,5})(?=[+-Z]|$)', date_str)
+        if millisecond_match:
+            ms_part = millisecond_match.group(1)
+            if len(ms_part) < 6:
+                # Pad with zeros to get 6 digits for microseconds
+                padded_ms = ms_part.ljust(6, '0')
+                date_str = date_str.replace(f".{ms_part}", f".{padded_ms}")
+        
+        # Handle missing timezone info
+        if 'T' in date_str and not re.search(r'[+-Z]', date_str):
+            # No timezone specified, assume UTC
+            date_str = date_str + '+00:00'
+        
+        # Try parsing with fromisoformat which handles ISO 8601
+        try:
+            dt_obj = datetime.fromisoformat(date_str)
+        except ValueError:
+            # If fromisoformat fails, try strptime with different formats
+            for fmt in ['%Y-%m-%dT%H:%M:%S.%f%z', '%Y-%m-%dT%H:%M:%S%z', '%Y-%m-%dT%H:%M:%S']:
+                try:
+                    dt_obj = datetime.strptime(date_str, fmt)
+                    break
+                except ValueError:
+                    continue
+            else:
+                # If all formats fail, raise ValueError to trigger fallback
+                raise ValueError(f"Could not parse date with any format: {date_str}")
+        
+        # Ensure timezone info is set
+        if dt_obj.tzinfo is None:
+            dt_obj = dt_obj.replace(tzinfo=timezone.utc)
+            
+        # Validate the date is reasonable (not too far in the past or future)
+        # This helps catch parsing errors that result in valid but incorrect dates
+        now = datetime.now(timezone.utc)
+        hundred_years_ago = now.replace(year=now.year - 100)
+        hundred_years_future = now.replace(year=now.year + 100)
+        
+        if dt_obj < hundred_years_ago or dt_obj > hundred_years_future:
+            logger.warning(f"Parsed date is outside reasonable range: {dt_obj.isoformat()}")
+            # Continue anyway, as it might be intentional in some cases
+        
+        return dt_obj
+        
+    except (ValueError, TypeError, AttributeError) as e:
+        logger.warning(f"Could not parse date string from ADO with standard formats: {date_str} - Error: {e}")
+        
+        # Additional fallback strategies
+        try:
+            # Try extracting just the YYYY-MM-DD part if there's a T in the string
+            if isinstance(date_str, str) and 'T' in date_str:
+                date_part = date_str.split('T')[0]
+                dt_obj = datetime.strptime(date_part, '%Y-%m-%d')
+                dt_obj = dt_obj.replace(tzinfo=timezone.utc)
+                return dt_obj
+                
+            # Try handling other common formats
+            if isinstance(date_str, str):
+                # Try various date formats
+                for fmt in ['%Y/%m/%d', '%m/%d/%Y', '%d-%m-%Y', '%Y.%m.%d']:
+                    try:
+                        dt_obj = datetime.strptime(date_str, fmt)
+                        dt_obj = dt_obj.replace(tzinfo=timezone.utc)
+                        return dt_obj
+                    except ValueError:
+                        continue
+        except Exception as nested_e:
+            logger.debug(f"All fallback date parsing attempts failed: {nested_e}")
+                
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error parsing date string {date_str}: {e}")
+        return None
 
 def migrate_images_in_html_text(html_content, gitlab_project_obj, ado_pat_raw_token, script_config, gitlab_interaction_module):
     if not html_content or not script_config.get('migrate_comment_images', False) : 

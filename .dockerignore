@@ -1,0 +1,44 @@
+# Git
+.git
+.gitignore
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Virtual Environment
+venv/
+env/
+
+# Local SQLite databases
+*.db
+
+# Migration checkpoints and logs
+migration_checkpoint.json
+*_migration_log.txt
+*_ado_gitlab_map.json
+
+# Docker files
+Dockerfile
+docker-compose.yml
+
+# Test files
+test_*.py
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Temporary files
+.DS_Store
+.vscode/
+*.swp
+*.swo
+
+# Environment variables
+.env
+.env.*
+!.env.example
