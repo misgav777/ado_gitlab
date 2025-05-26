@@ -1,33 +1,15 @@
-# Local .terraform directories
 .terraform/
-
-# Terraform state files
+.terraform.lock.hcl
 *.tfstate
 *.tfstate.*
-
-# Crash logs
 crash.log
-
-# Ignore override files (used for customization per environment)
 override.tf
 override.tf.json
 *_override.tf
 *_override.tf.json
-
-# CLI configuration files
 .terraformrc
 terraform.rc
-
-# Sensitive variable files (you may name yours differently)
 *.tfvars
 *.tfvars.json
-
-# Plan output
 *.tfplan
-
-# Backup files
 *.bak
-
-# Terraform lock file (optional - include only if you're NOT using version pinning)
-# Uncomment the next line if you want to ignore the lock file
-# .terraform.lock.hcl
