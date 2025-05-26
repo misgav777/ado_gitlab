@@ -1,0 +1,7 @@
+aws_region       = "il-central-1"
+project_name     = "gitlab-ado-migration"
+environment      = "dev"
+instance_type    = "t3.micro"
+instance_profile = "SSM-EC2-Role"
+vpc_id           = "vpc-0ce1695a6c7e33dbe"
+subnet_id        = "subnet-06198f22291217d2b"
